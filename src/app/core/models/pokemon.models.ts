@@ -21,14 +21,41 @@ export interface PokemonCard {
   number: string;
   rarity?: string;
   setName: string;
+  setSeries?: string;
+  releaseDate?: string;
   imageSmall: string;
   imageLarge: string;
+  marketPriceUsd?: number;
+}
+
+export interface CardCollectionEntry {
+  cardId: string;
+  pokemonId: number;
+  cardName: string;
+  setName: string;
+  number: string;
+  rarity?: string;
+  imageSmall: string;
+  imageLarge: string;
+  marketPriceUsd?: number;
+  quantity: number;
+  languageCounts: Record<string, number>;
+  updatedAt: string;
+}
+
+export interface UserSettings {
+  id: 'profile';
+  trainerName: string;
+  totalTcgCards?: number;
+  updatedAt: string;
 }
 
 export interface ImportExportPayload {
-  schemaVersion: 1;
+  schemaVersion: 2;
   exportedAt: string;
   entries: CollectionEntry[];
+  cards: CardCollectionEntry[];
+  settings?: UserSettings;
 }
 
 export interface Achievement {
@@ -37,4 +64,5 @@ export interface Achievement {
   description: string;
   unlocked: boolean;
   icon: string;
+  tier: 'bronze' | 'silver' | 'gold' | 'platinum' | 'master';
 }

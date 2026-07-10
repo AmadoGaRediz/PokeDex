@@ -32,7 +32,7 @@ import { Pokemon } from '../../core/models/pokemon.models';
     h2{font-size:1.12rem;margin:4px 0 10px;text-transform:capitalize}.types{display:flex;gap:6px;flex-wrap:wrap;justify-content:center}.types span{font-size:.72rem;padding:4px 9px;border-radius:999px;background:var(--chip);text-transform:capitalize}
     .status{margin-top:auto;padding-top:12px;font-size:.75rem;font-weight:800;color:var(--muted)}.owned .status{color:var(--success)}
     .favorite{position:absolute;z-index:2;right:12px;top:10px;border:0;background:transparent;font-size:1.7rem;color:var(--yellow);cursor:pointer;filter:drop-shadow(0 2px 2px #0003)}
-    @keyframes unlock{0%{transform:scale(.92);filter:brightness(1.8)}60%{transform:scale(1.04)}100%{transform:scale(1)}}
+    @keyframes unlock{0%{transform:scale(.92);filter:brightness(1.8)}60%{transform:scale(1.04)}100%{transform:scale(1)}}@media(max-width:520px){.card{min-height:220px;border-radius:18px}.card-link{padding:12px}.image-wrap{height:105px}img{max-width:105px;max-height:105px}h2{font-size:.92rem;text-align:center}.types span{font-size:.62rem;padding:3px 7px}.favorite{right:6px;top:4px}.status{font-size:.68rem}}
   `]
 })
 export class PokemonCardComponent {

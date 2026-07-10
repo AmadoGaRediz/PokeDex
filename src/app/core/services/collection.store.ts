@@ -1,34 +1,83 @@
 import { computed, inject, Injectable, signal } from '@angular/core';
+import { firstValueFrom } from 'rxjs';
 import { db } from '../database/app-db';
-import { Achievement, CollectionEntry, ImportExportPayload, Pokemon } from '../models/pokemon.models';
+import { Achievement, CardCollectionEntry, CollectionEntry, ImportExportPayload, Pokemon, PokemonCard, UserSettings } from '../models/pokemon.models';
 import { PokeApiService } from './poke-api.service';
+import { TcgApiService } from './tcg-api.service';
 
 @Injectable({ providedIn: 'root' })
 export class CollectionStore {
   private readonly api = inject(PokeApiService);
+  private readonly tcg = inject(TcgApiService);
+
   readonly pokemon = signal<Pokemon[]>([]);
   readonly entries = signal<Map<number, CollectionEntry>>(new Map());
+  readonly cards = signal<Map<string, CardCollectionEntry>>(new Map());
+  readonly trainerName = signal('Entrenador');
+  readonly totalTcgCards = signal(0);
   readonly loading = signal(true);
   readonly syncing = signal(false);
   readonly progress = signal(0);
   readonly error = signal<string | null>(null);
+  readonly achievementToast = signal<Achievement | null>(null);
+
+  private unlockedSnapshot = new Set<string>();
+  private toastTimer: number | undefined;
 
   readonly total = computed(() => this.pokemon().length);
   readonly ownedCount = computed(() => [...this.entries().values()].filter(x => x.owned).length);
   readonly missingCount = computed(() => Math.max(0, this.total() - this.ownedCount()));
   readonly percent = computed(() => this.total() ? Math.round(this.ownedCount() / this.total() * 100) : 0);
+  readonly uniqueCardsOwned = computed(() => [...this.cards().values()].filter(card => card.quantity > 0).length);
+  readonly totalCardsOwned = computed(() => [...this.cards().values()].reduce((sum, card) => sum + Math.max(0, card.quantity), 0));
+  readonly estimatedValueUsd = computed(() => Number([...this.cards().values()].reduce((sum, card) => sum + ((card.marketPriceUsd ?? 0) * Math.max(0, card.quantity)), 0).toFixed(2)));
+  readonly cardPercent = computed(() => this.totalTcgCards() ? Math.min(100, Number((this.uniqueCardsOwned() / this.totalTcgCards() * 100).toFixed(2))) : 0);
 
   readonly achievements = computed<Achievement[]>(() => {
     const owned = this.ownedCount();
-    const generationComplete = this.groupProgress('generation').some(item => item.owned === item.total && item.total > 0);
-    const typeComplete = this.groupProgress('type').some(item => item.owned === item.total && item.total > 0);
+    const uniqueCards = this.uniqueCardsOwned();
+    const totalCards = this.totalCardsOwned();
+    const value = this.estimatedValueUsd();
+    const generations = this.groupProgress('generation');
+    const types = this.groupProgress('type');
+    const completedGenerations = generations.filter(item => item.owned === item.total && item.total > 0).length;
+    const completedTypes = types.filter(item => item.owned === item.total && item.total > 0).length;
+    const favoriteCount = [...this.entries().values()].filter(entry => entry.favorite).length;
+    const languageKinds = new Set<string>();
+    for (const card of this.cards().values()) Object.entries(card.languageCounts).forEach(([lang, count]) => { if (count > 0) languageKinds.add(lang); });
+
     return [
-      { id: 'first', title: '¡Comenzó la aventura!', description: 'Obtén tu primer Pokémon.', unlocked: owned >= 1, icon: '🥚' },
-      { id: '50', title: 'Coleccionista', description: 'Obtén 50 Pokémon.', unlocked: owned >= 50, icon: '⭐' },
-      { id: '100', title: 'Centenario', description: 'Obtén 100 Pokémon.', unlocked: owned >= 100, icon: '🏅' },
-      { id: 'generation', title: 'Maestro generacional', description: 'Completa una generación.', unlocked: generationComplete, icon: '🏆' },
-      { id: 'type', title: 'Especialista de tipo', description: 'Completa todos los Pokémon de un tipo.', unlocked: typeComplete, icon: '⚡' },
-      { id: 'all', title: 'Maestro Pokémon', description: 'Completa toda la PokéCardDex.', unlocked: this.total() > 0 && owned === this.total(), icon: '👑' }
+      { id: 'first-pokemon', title: 'Primera captura', description: 'Marca tu primer Pokémon como obtenido.', unlocked: owned >= 1, icon: '🥉', tier: 'bronze' },
+      { id: 'starter-team', title: 'Equipo inicial', description: 'Obtén 3 Pokémon.', unlocked: owned >= 3, icon: '🔥', tier: 'bronze' },
+      { id: 'ten-pokemon', title: 'Diez registros', description: 'Obtén 10 Pokémon.', unlocked: owned >= 10, icon: '🔴', tier: 'bronze' },
+      { id: 'twenty-five-pokemon', title: 'Ruta avanzada', description: 'Obtén 25 Pokémon.', unlocked: owned >= 25, icon: '🧭', tier: 'bronze' },
+      { id: 'fifty-pokemon', title: 'Coleccionista', description: 'Obtén 50 Pokémon.', unlocked: owned >= 50, icon: '🥈', tier: 'silver' },
+      { id: 'hundred-pokemon', title: 'Centenario', description: 'Obtén 100 Pokémon.', unlocked: owned >= 100, icon: '🏅', tier: 'silver' },
+      { id: 'two-hundred-pokemon', title: 'Doble centena', description: 'Obtén 200 Pokémon.', unlocked: owned >= 200, icon: '⚙️', tier: 'silver' },
+      { id: 'three-hundred-pokemon', title: 'Archivo regional', description: 'Obtén 300 Pokémon.', unlocked: owned >= 300, icon: '📘', tier: 'silver' },
+      { id: 'five-hundred-pokemon', title: 'Mitad legendaria', description: 'Obtén 500 Pokémon.', unlocked: owned >= 500, icon: '🥇', tier: 'gold' },
+      { id: 'seven-fifty-pokemon', title: 'Ultra coleccionista', description: 'Obtén 750 Pokémon.', unlocked: owned >= 750, icon: '💎', tier: 'platinum' },
+      { id: 'all-pokedex', title: 'Maestro de la PokéCardDex', description: 'Completa todos los Pokémon existentes con al menos una carta.', unlocked: this.total() > 0 && owned === this.total(), icon: '👑', tier: 'master' },
+      { id: 'first-favorite', title: 'Favorito elegido', description: 'Marca un Pokémon como favorito.', unlocked: favoriteCount >= 1, icon: '⭐', tier: 'bronze' },
+      { id: 'ten-favorites', title: 'Vitrina personal', description: 'Marca 10 Pokémon como favoritos.', unlocked: favoriteCount >= 10, icon: '🌟', tier: 'silver' },
+      { id: 'generation-one', title: 'Kanto completo', description: 'Completa la Generación 1.', unlocked: this.generationCompleted(1), icon: '🗺️', tier: 'gold' },
+      { id: 'any-generation', title: 'Maestro generacional', description: 'Completa cualquier generación.', unlocked: completedGenerations >= 1, icon: '🏆', tier: 'gold' },
+      { id: 'three-generations', title: 'Tres regiones dominadas', description: 'Completa 3 generaciones.', unlocked: completedGenerations >= 3, icon: '🏰', tier: 'platinum' },
+      { id: 'all-generations', title: 'Todas las regiones', description: 'Completa todas las generaciones disponibles.', unlocked: generations.length > 0 && completedGenerations === generations.length, icon: '🌎', tier: 'master' },
+      { id: 'one-type', title: 'Especialista de tipo', description: 'Completa todos los Pokémon de un tipo.', unlocked: completedTypes >= 1, icon: '⚡', tier: 'gold' },
+      { id: 'five-types', title: 'Maestro multitypo', description: 'Completa 5 tipos.', unlocked: completedTypes >= 5, icon: '🛡️', tier: 'platinum' },
+      { id: 'all-types', title: 'Dominio elemental', description: 'Completa todos los tipos disponibles.', unlocked: types.length > 0 && completedTypes === types.length, icon: '🌈', tier: 'master' },
+      { id: 'first-card', title: 'Primera carta registrada', description: 'Agrega tu primera carta específica.', unlocked: uniqueCards >= 1, icon: '🃏', tier: 'bronze' },
+      { id: 'ten-unique-cards', title: 'Carpeta inicial', description: 'Registra 10 cartas distintas.', unlocked: uniqueCards >= 10, icon: '📒', tier: 'bronze' },
+      { id: 'fifty-unique-cards', title: 'Binder serio', description: 'Registra 50 cartas distintas.', unlocked: uniqueCards >= 50, icon: '📚', tier: 'silver' },
+      { id: 'hundred-unique-cards', title: 'Archivo TCG', description: 'Registra 100 cartas distintas.', unlocked: uniqueCards >= 100, icon: '🗃️', tier: 'gold' },
+      { id: 'five-hundred-unique-cards', title: 'Museo de cartas', description: 'Registra 500 cartas distintas.', unlocked: uniqueCards >= 500, icon: '🏛️', tier: 'platinum' },
+      { id: 'all-tcg-cards', title: 'Leyenda TCG absoluta', description: 'Registra una copia de cada carta existente en Pokémon TCG API.', unlocked: this.totalTcgCards() > 0 && uniqueCards >= this.totalTcgCards(), icon: '👑', tier: 'master' },
+      { id: 'ten-total-copies', title: 'Diez copias', description: 'Acumula 10 cartas contando duplicados.', unlocked: totalCards >= 10, icon: '🔢', tier: 'bronze' },
+      { id: 'hundred-total-copies', title: 'Caja de entrenador', description: 'Acumula 100 cartas contando duplicados.', unlocked: totalCards >= 100, icon: '📦', tier: 'silver' },
+      { id: 'multi-language', title: 'Colección internacional', description: 'Registra cartas en 3 idiomas diferentes.', unlocked: languageKinds.size >= 3, icon: '🌐', tier: 'gold' },
+      { id: 'value-100', title: 'Tesoro inicial', description: 'Alcanza un valor estimado de $100 USD.', unlocked: value >= 100, icon: '💰', tier: 'silver' },
+      { id: 'value-500', title: 'Tesoro premium', description: 'Alcanza un valor estimado de $500 USD.', unlocked: value >= 500, icon: '💵', tier: 'gold' }
     ];
   });
 
@@ -36,11 +85,18 @@ export class CollectionStore {
     this.loading.set(true);
     this.error.set(null);
     try {
-      const [cachedPokemon, cachedEntries] = await Promise.all([db.pokemon.toArray(), db.collection.toArray()]);
+      const [cachedPokemon, cachedEntries, cachedCards, settings] = await Promise.all([
+        db.pokemon.toArray(), db.collection.toArray(), db.cards.toArray(), db.settings.get('profile')
+      ]);
       this.pokemon.set(cachedPokemon.sort((a, b) => a.id - b.id));
       this.entries.set(new Map(cachedEntries.map(entry => [entry.pokemonId, entry])));
+      this.cards.set(new Map(cachedCards.map(card => [card.cardId, card])));
+      this.trainerName.set(settings?.trainerName?.trim() || 'Entrenador');
+      this.totalTcgCards.set(settings?.totalTcgCards ?? 0);
+      this.unlockedSnapshot = new Set(this.achievements().filter(item => item.unlocked).map(item => item.id));
       if (!cachedPokemon.length && navigator.onLine) await this.syncPokemon();
       else if (!cachedPokemon.length) this.error.set('Conéctate una vez para descargar la Pokédex. Después funcionará sin internet.');
+      if (navigator.onLine && !this.totalTcgCards()) void this.refreshTcgTotal();
     } catch {
       this.error.set('No fue posible abrir el almacenamiento local.');
     } finally { this.loading.set(false); }
@@ -53,26 +109,70 @@ export class CollectionStore {
       const values = await this.api.loadAll((done, total) => this.progress.set(Math.round(done / total * 100)));
       await db.transaction('rw', db.pokemon, async () => { await db.pokemon.clear(); await db.pokemon.bulkPut(values); });
       this.pokemon.set(values);
+      this.checkAchievements();
     } catch { this.error.set('No se pudo actualizar la Pokédex. Revisa tu conexión.'); }
     finally { this.syncing.set(false); }
   }
 
+  async refreshTcgTotal(): Promise<void> {
+    try {
+      const total = await firstValueFrom(this.tcg.totalCards());
+      this.totalTcgCards.set(total);
+      await this.saveSettings({ totalTcgCards: total });
+    } catch { /* La cifra global de cartas es opcional y no debe bloquear la app. */ }
+  }
+
   entry(id: number): CollectionEntry | undefined { return this.entries().get(id); }
+  cardEntry(id: string): CardCollectionEntry | undefined { return this.cards().get(id); }
   isOwned(id: number): boolean { return this.entry(id)?.owned ?? false; }
   isFavorite(id: number): boolean { return this.entry(id)?.favorite ?? false; }
+  cardQuantity(id: string): number { return this.cardEntry(id)?.quantity ?? 0; }
+  pokemonCards(pokemonId: number): CardCollectionEntry[] { return [...this.cards().values()].filter(card => card.pokemonId === pokemonId && card.quantity > 0); }
 
   async toggleOwned(id: number): Promise<void> {
     const current = this.entry(id);
     const owned = !(current?.owned ?? false);
-    await this.save({ pokemonId: id, owned, favorite: current?.favorite ?? false,
+    await this.saveCollection({ pokemonId: id, owned, favorite: current?.favorite ?? false,
       obtainedAt: owned ? (current?.obtainedAt ?? new Date().toISOString()) : undefined,
       updatedAt: new Date().toISOString() });
   }
 
   async toggleFavorite(id: number): Promise<void> {
     const current = this.entry(id);
-    await this.save({ pokemonId: id, owned: current?.owned ?? false, favorite: !(current?.favorite ?? false),
+    await this.saveCollection({ pokemonId: id, owned: current?.owned ?? false, favorite: !(current?.favorite ?? false),
       obtainedAt: current?.obtainedAt, updatedAt: new Date().toISOString() });
+  }
+
+  async setTrainerName(name: string): Promise<void> {
+    await this.saveSettings({ trainerName: name.trim() || 'Entrenador' });
+  }
+
+  async addCard(pokemonId: number, card: PokemonCard, language = 'Español'): Promise<void> {
+    const current = this.cardEntry(card.id);
+    const quantity = (current?.quantity ?? 0) + 1;
+    const languageCounts = { ...(current?.languageCounts ?? {}) };
+    languageCounts[language] = (languageCounts[language] ?? 0) + 1;
+    await this.saveCard(this.toCardEntry(pokemonId, card, quantity, languageCounts));
+    if (!this.isOwned(pokemonId)) await this.toggleOwned(pokemonId);
+  }
+
+  async updateCard(card: CardCollectionEntry, quantity: number, languageCounts: Record<string, number>): Promise<void> {
+    const cleanQuantity = Math.max(0, Math.floor(Number(quantity) || 0));
+    const cleanLanguages = Object.fromEntries(
+      Object.entries(languageCounts)
+        .map(([key, value]): [string, number] => [
+          key,
+          Math.max(0, Math.floor(Number(value) || 0))
+        ])
+        .filter((entry): entry is [string, number] => entry[1] > 0)
+    );
+    await this.saveCard({ ...card, quantity: cleanQuantity, languageCounts: cleanLanguages, updatedAt: new Date().toISOString() });
+  }
+
+  async removeCard(cardId: string): Promise<void> {
+    await db.cards.delete(cardId);
+    this.cards.update(map => { const next = new Map(map); next.delete(cardId); return next; });
+    this.checkAchievements();
   }
 
   groupProgress(group: 'generation' | 'type'): Array<{ label: string; owned: number; total: number; percent: number }> {
@@ -88,25 +188,77 @@ export class CollectionStore {
   }
 
   exportJson(): void {
-    const payload: ImportExportPayload = { schemaVersion: 1, exportedAt: new Date().toISOString(), entries: [...this.entries().values()] };
+    const payload: ImportExportPayload = {
+      schemaVersion: 2,
+      exportedAt: new Date().toISOString(),
+      entries: [...this.entries().values()],
+      cards: [...this.cards().values()],
+      settings: { id: 'profile', trainerName: this.trainerName(), totalTcgCards: this.totalTcgCards(), updatedAt: new Date().toISOString() }
+    };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob); const link = document.createElement('a');
     link.href = url; link.download = `pokecarddex-${new Date().toISOString().slice(0, 10)}.json`; link.click(); URL.revokeObjectURL(url);
   }
 
   async importJson(file: File): Promise<void> {
-    const parsed = JSON.parse(await file.text()) as ImportExportPayload;
-    if (parsed.schemaVersion !== 1 || !Array.isArray(parsed.entries)) throw new Error('Archivo incompatible');
-    const cleaned = parsed.entries.filter(entry => Number.isInteger(entry.pokemonId)).map(entry => ({
+    const parsed = JSON.parse(await file.text()) as Partial<ImportExportPayload> & { schemaVersion: number };
+    if (![1, 2].includes(parsed.schemaVersion) || !Array.isArray(parsed.entries)) throw new Error('Archivo incompatible');
+    const cleanedEntries = parsed.entries.filter(entry => Number.isInteger(entry.pokemonId)).map(entry => ({
       pokemonId: entry.pokemonId, owned: Boolean(entry.owned), favorite: Boolean(entry.favorite),
       obtainedAt: entry.obtainedAt, updatedAt: new Date().toISOString()
     }));
-    await db.collection.bulkPut(cleaned);
-    this.entries.set(new Map((await db.collection.toArray()).map(entry => [entry.pokemonId, entry])));
+    const cleanedCards = (parsed.cards ?? []).filter(card => typeof card.cardId === 'string').map(card => ({ ...card, quantity: Math.max(0, Number(card.quantity) || 0), languageCounts: card.languageCounts ?? {}, updatedAt: new Date().toISOString() }));
+    await db.transaction('rw', db.collection, db.cards, db.settings, async () => {
+      await db.collection.bulkPut(cleanedEntries);
+      if (cleanedCards.length) await db.cards.bulkPut(cleanedCards);
+      if (parsed.settings) await db.settings.put({ ...parsed.settings, id: 'profile', updatedAt: new Date().toISOString() });
+    });
+    const [entries, cards, settings] = await Promise.all([db.collection.toArray(), db.cards.toArray(), db.settings.get('profile')]);
+    this.entries.set(new Map(entries.map(entry => [entry.pokemonId, entry])));
+    this.cards.set(new Map(cards.map(card => [card.cardId, card])));
+    this.trainerName.set(settings?.trainerName?.trim() || 'Entrenador');
+    this.totalTcgCards.set(settings?.totalTcgCards ?? this.totalTcgCards());
+    this.checkAchievements();
   }
 
-  private async save(entry: CollectionEntry): Promise<void> {
+  private generationCompleted(value: number): boolean {
+    const item = this.groupProgress('generation').find(row => row.label === `Generación ${value}`);
+    return !!item && item.total > 0 && item.owned === item.total;
+  }
+
+  private async saveCollection(entry: CollectionEntry): Promise<void> {
     await db.collection.put(entry);
     this.entries.update(map => { const next = new Map(map); next.set(entry.pokemonId, entry); return next; });
+    this.checkAchievements();
+  }
+
+  private async saveCard(entry: CardCollectionEntry): Promise<void> {
+    if (entry.quantity <= 0) return this.removeCard(entry.cardId);
+    await db.cards.put(entry);
+    this.cards.update(map => { const next = new Map(map); next.set(entry.cardId, entry); return next; });
+    this.checkAchievements();
+  }
+
+  private async saveSettings(values: Partial<UserSettings>): Promise<void> {
+    const current = await db.settings.get('profile');
+    const next: UserSettings = { id: 'profile', trainerName: this.trainerName(), totalTcgCards: this.totalTcgCards(), ...current, ...values, updatedAt: new Date().toISOString() };
+    await db.settings.put(next);
+    this.trainerName.set(next.trainerName?.trim() || 'Entrenador');
+    this.totalTcgCards.set(next.totalTcgCards ?? 0);
+  }
+
+  private toCardEntry(pokemonId: number, card: PokemonCard, quantity: number, languageCounts: Record<string, number>): CardCollectionEntry {
+    return { cardId: card.id, pokemonId, cardName: card.name, setName: card.setName, number: card.number, rarity: card.rarity,
+      imageSmall: card.imageSmall, imageLarge: card.imageLarge, marketPriceUsd: card.marketPriceUsd, quantity, languageCounts, updatedAt: new Date().toISOString() };
+  }
+
+  private checkAchievements(): void {
+    const unlockedNow = this.achievements().filter(item => item.unlocked);
+    const fresh = unlockedNow.find(item => !this.unlockedSnapshot.has(item.id));
+    this.unlockedSnapshot = new Set(unlockedNow.map(item => item.id));
+    if (!fresh) return;
+    this.achievementToast.set(fresh);
+    if (this.toastTimer) window.clearTimeout(this.toastTimer);
+    this.toastTimer = window.setTimeout(() => this.achievementToast.set(null), 5200);
   }
 }
