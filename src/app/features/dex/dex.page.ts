@@ -1,6 +1,8 @@
-import { AfterViewInit, ChangeDetectionStrategy, Component, computed, effect, inject, OnDestroy } from '@angular/core';
+import { AfterViewInit, ChangeDetectionStrategy, Component, computed, DestroyRef, effect, inject } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { ActivatedRoute, Router } from '@angular/router';
+import { fromEvent, auditTime } from 'rxjs';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { CollectionStore } from '../../core/services/collection.store';
 import { DexViewStateService } from '../../core/services/dex-view-state.service';
 import { PokemonCardComponent } from '../../shared/components/pokemon-card.component';
@@ -35,7 +37,7 @@ import { PokemonCardComponent } from '../../shared/components/pokemon-card.compo
       <div class="empty"><h2>Sin datos disponibles</h2><p>{{store.error()}}</p><button class="primary" (click)="store.syncPokemon()">Reintentar</button></div>
     } @else {
       <section class="grid">@for(pokemon of filtered();track pokemon.id){
-        <app-pokemon-card [pokemon]="pokemon" [owned]="store.isOwned(pokemon.id)" [favorite]="store.isFavorite(pokemon.id)" (favoriteToggle)="store.toggleFavorite(pokemon.id)" />
+        <app-pokemon-card [pokemon]="pokemon" [owned]="store.isOwned(pokemon.id)" [favorite]="store.isFavorite(pokemon.id)" (favoriteToggle)="store.toggleFavorite(pokemon.id)" (opening)="preparePokemonNavigation()" />
       } @empty {<div class="empty"><h2>No hay coincidencias</h2><p>Prueba con otros filtros.</p></div>}</section>
     }
 
@@ -57,13 +59,14 @@ import { PokemonCardComponent } from '../../shared/components/pokemon-card.compo
     @media(max-width:760px){.pokedex-hero{grid-template-columns:1fr 120px;padding:24px 16px 18px;border-radius:24px}.hero-copy h1{font-size:2.35rem}.hero-copy span{font-size:.82rem}.lcd{min-height:110px;border-width:6px}.lcd strong{font-size:2.1rem}.toolbar{top:0;margin:12px -2px 4px;padding:8px;border-radius:17px}.desktop-filters{display:none}.filter-trigger{display:block}.grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}.sheet-backdrop{display:flex;position:fixed;inset:0;z-index:80;background:#0008;align-items:flex-end}.filter-sheet{width:100%;max-height:88vh;overflow:auto;background:var(--surface);border-radius:24px 24px 0 0;padding:10px 18px calc(18px + env(safe-area-inset-bottom));box-shadow:0 -18px 50px #0004;animation:sheet .25s ease}.grabber{display:block;width:42px;height:5px;border-radius:999px;background:var(--line);margin:0 auto 10px}.filter-sheet header{display:flex;align-items:center;justify-content:space-between}.filter-sheet header button,.clear{border:0;background:none;color:var(--red);font-weight:800}.filter-sheet label{display:grid;gap:6px;margin:14px 0;color:var(--muted);font-size:.85rem;font-weight:800}.filter-sheet select{height:50px}.apply{width:100%;border:0;background:var(--red);color:#fff;border-radius:14px;padding:14px;font-weight:900}.clear{display:block;margin:14px auto}@keyframes sheet{from{transform:translateY(100%)}to{transform:none}}}
   `]
 })
-export class DexPage implements AfterViewInit, OnDestroy {
+export class DexPage implements AfterViewInit {
   readonly store = inject(CollectionStore);
   readonly state = inject(DexViewStateService);
   private readonly route = inject(ActivatedRoute);
   private readonly router = inject(Router);
+  private readonly destroyRef = inject(DestroyRef);
   filtersOpen = false;
-  private readonly scrollHandler = () => this.state.rememberScroll();
+  private restoredScroll = false;
 
   readonly types = computed(() => [...new Set(this.store.pokemon().flatMap(p => p.types))].sort());
   readonly generations = computed(() => [...new Set(this.store.pokemon().map(p => p.generation))].filter(Boolean).sort((a,b)=>a-b));
@@ -81,10 +84,40 @@ export class DexPage implements AfterViewInit, OnDestroy {
       const status=params.get('status'); if(status==='owned'||status==='missing'||status==='favorites'||status==='all') this.state.status.set(status);
     }
     effect(() => {
-      this.state.snapshot(); this.state.save();
+      this.state.snapshot(); this.state.saveFilters();
       void this.router.navigate([], { relativeTo:this.route, replaceUrl:true, queryParams:{ q:this.state.query()||null,type:this.state.type()||null,gen:this.state.generation()||null,status:this.state.status()==='all'?null:this.state.status(),sort:this.state.sort()==='number'?null:this.state.sort() }, queryParamsHandling:'merge' });
     });
   }
-  ngAfterViewInit():void{window.addEventListener('scroll',this.scrollHandler,{passive:true});setTimeout(()=>window.scrollTo({top:this.state.scrollY(),behavior:'instant'}),0);}
-  ngOnDestroy():void{this.state.rememberScroll();window.removeEventListener('scroll',this.scrollHandler);}
+  ngAfterViewInit(): void {
+    fromEvent(window, 'scroll', { passive: true })
+      .pipe(auditTime(160), takeUntilDestroyed(this.destroyRef))
+      .subscribe(() => this.state.rememberScroll(window.scrollY));
+
+    // Espera a que la cuadrícula esté lista y restaura una sola vez.
+    this.restoreScrollWhenReady();
+  }
+
+  private restoreScrollWhenReady(attempt = 0): void {
+    if (this.restoredScroll) return;
+
+    const ready = !this.store.loading() && !this.store.syncing() && this.store.total() > 0;
+    if (!ready && attempt < 40) {
+      window.setTimeout(() => this.restoreScrollWhenReady(attempt + 1), 100);
+      return;
+    }
+
+    this.restoredScroll = true;
+    const savedPosition = this.state.consumeScrollRestore();
+    if (savedPosition === null || savedPosition <= 0) return;
+
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        window.scrollTo({ top: savedPosition, behavior: 'instant' });
+      });
+    });
+  }
+
+  preparePokemonNavigation(): void {
+    this.state.markScrollForRestore(window.scrollY);
+  }
 }

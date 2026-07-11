@@ -41,3 +41,12 @@ dist/pokecarddex/browser
 ```
 
 En Render agrega una regla Rewrite de `/*` a `/index.html`.
+
+## Corrección iOS: scroll del Dex
+
+Esta versión evita que la cuadrícula vuelva hacia arriba mientras se desplaza en una PWA instalada en iPhone:
+
+- La posición se guarda sin actualizar Angular Signals durante cada evento `scroll`.
+- La restauración se ejecuta una sola vez al volver desde el detalle de un Pokémon.
+- Se desactiva la restauración automática del Router para evitar dos sistemas compitiendo.
+- El desplazamiento global usa comportamiento instantáneo al restaurar y no `smooth`.

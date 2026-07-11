@@ -11,7 +11,7 @@ import { Pokemon } from '../../core/models/pokemon.models';
       <button class="favorite" type="button" [attr.aria-label]="favorite() ? 'Quitar favorito' : 'Agregar favorito'" (click)="favoriteToggle.emit(); $event.stopPropagation()">
         {{ favorite() ? '★' : '☆' }}
       </button>
-      <a [routerLink]="['/pokemon', pokemon().id]" class="card-link">
+      <a [routerLink]="['/pokemon', pokemon().id]" class="card-link" (click)="opening.emit()">
         <span class="number">#{{ pokemon().id.toString().padStart(4, '0') }}</span>
         <div class="image-wrap"><img [src]="pokemon().image" [alt]="pokemon().nameEs" loading="lazy"></div>
         <h2>{{ pokemon().nameEs }}</h2>
@@ -36,5 +36,5 @@ import { Pokemon } from '../../core/models/pokemon.models';
   `]
 })
 export class PokemonCardComponent {
-  pokemon = input.required<Pokemon>(); owned = input(false); favorite = input(false); favoriteToggle = output<void>();
+  pokemon = input.required<Pokemon>(); owned = input(false); favorite = input(false); favoriteToggle = output<void>(); opening = output<void>();
 }
