@@ -36,7 +36,8 @@ export class TcgApiService {
       releaseDate: card.set.releaseDate,
       imageSmall: card.images.small,
       imageLarge: card.images.large,
-      marketPriceUsd: this.marketPrice(card)
+      marketPriceUsd: this.marketPriceUsd(card),
+      marketPriceEur: card.cardmarket?.prices?.averageSellPrice
     }))));
   }
 
@@ -46,7 +47,7 @@ export class TcgApiService {
       .pipe(map(response => response.totalCount));
   }
 
-  private marketPrice(card: CardResponse['data'][number]): number | undefined {
+  private marketPriceUsd(card: CardResponse['data'][number]): number | undefined {
     const prices = card.tcgplayer?.prices ? Object.values(card.tcgplayer.prices) : [];
     const value = prices.find(price => typeof price.market === 'number')?.market
       ?? prices.find(price => typeof price.mid === 'number')?.mid

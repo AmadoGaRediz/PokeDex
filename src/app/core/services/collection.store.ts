@@ -1,7 +1,7 @@
 import { computed, inject, Injectable, signal } from '@angular/core';
 import { firstValueFrom } from 'rxjs';
 import { db } from '../database/app-db';
-import { Achievement, CardCollectionEntry, CollectionEntry, ImportExportPayload, Pokemon, PokemonCard, UserSettings } from '../models/pokemon.models';
+import { Achievement, CardCollectionEntry, CardVariant, CollectionEntry, ImportExportPayload, Pokemon, PokemonCard, PriceCurrency, UserSettings } from '../models/pokemon.models';
 import { PokeApiService } from './poke-api.service';
 import { TcgApiService } from './tcg-api.service';
 
@@ -15,6 +15,7 @@ export class CollectionStore {
   readonly cards = signal<Map<string, CardCollectionEntry>>(new Map());
   readonly trainerName = signal('Entrenador');
   readonly totalTcgCards = signal(0);
+  readonly preferredCurrency = signal<PriceCurrency>('USD');
   readonly loading = signal(true);
   readonly syncing = signal(false);
   readonly progress = signal(0);
@@ -28,9 +29,13 @@ export class CollectionStore {
   readonly ownedCount = computed(() => [...this.entries().values()].filter(x => x.owned).length);
   readonly missingCount = computed(() => Math.max(0, this.total() - this.ownedCount()));
   readonly percent = computed(() => this.total() ? Math.round(this.ownedCount() / this.total() * 100) : 0);
-  readonly uniqueCardsOwned = computed(() => [...this.cards().values()].filter(card => card.quantity > 0).length);
-  readonly totalCardsOwned = computed(() => [...this.cards().values()].reduce((sum, card) => sum + Math.max(0, card.quantity), 0));
-  readonly estimatedValueUsd = computed(() => Number([...this.cards().values()].reduce((sum, card) => sum + ((card.marketPriceUsd ?? 0) * Math.max(0, card.quantity)), 0).toFixed(2)));
+  readonly uniqueCardsOwned = computed(() => [...this.cards().values()].filter(card => this.entryQuantity(card) > 0).length);
+  readonly totalCardsOwned = computed(() => [...this.cards().values()].reduce((sum, card) => sum + this.entryQuantity(card), 0));
+  readonly estimatedValueUsd = computed(() => Number([...this.cards().values()].reduce((sum, card) => {
+    if (card.variants?.length) return sum + card.variants.reduce((variantSum, variant) => variantSum + ((variant.currency === 'USD' ? variant.estimatedPrice : undefined) ?? card.marketPriceUsd ?? 0) * variant.quantity, 0);
+    return sum + ((card.marketPriceUsd ?? 0) * Math.max(0, card.quantity));
+  }, 0).toFixed(2)));
+  readonly purchaseValueUsd = computed(() => Number([...this.cards().values()].reduce((sum, card) => sum + (card.variants ?? []).reduce((variantSum, item) => variantSum + (item.currency === 'USD' ? (item.purchasePrice ?? 0) * item.quantity : 0), 0), 0).toFixed(2)));
   readonly cardPercent = computed(() => this.totalTcgCards() ? Math.min(100, Number((this.uniqueCardsOwned() / this.totalTcgCards() * 100).toFixed(2))) : 0);
 
   readonly achievements = computed<Achievement[]>(() => {
@@ -93,6 +98,7 @@ export class CollectionStore {
       this.cards.set(new Map(cachedCards.map(card => [card.cardId, card])));
       this.trainerName.set(settings?.trainerName?.trim() || 'Entrenador');
       this.totalTcgCards.set(settings?.totalTcgCards ?? 0);
+      this.preferredCurrency.set(settings?.preferredCurrency ?? 'USD');
       this.unlockedSnapshot = new Set(this.achievements().filter(item => item.unlocked).map(item => item.id));
       if (!cachedPokemon.length && navigator.onLine) await this.syncPokemon();
       else if (!cachedPokemon.length) this.error.set('Conéctate una vez para descargar la Pokédex. Después funcionará sin internet.');
@@ -126,8 +132,9 @@ export class CollectionStore {
   cardEntry(id: string): CardCollectionEntry | undefined { return this.cards().get(id); }
   isOwned(id: number): boolean { return this.entry(id)?.owned ?? false; }
   isFavorite(id: number): boolean { return this.entry(id)?.favorite ?? false; }
-  cardQuantity(id: string): number { return this.cardEntry(id)?.quantity ?? 0; }
-  pokemonCards(pokemonId: number): CardCollectionEntry[] { return [...this.cards().values()].filter(card => card.pokemonId === pokemonId && card.quantity > 0); }
+  cardQuantity(id: string): number { const card = this.cardEntry(id); return card ? this.entryQuantity(card) : 0; }
+  pokemonCards(pokemonId: number): CardCollectionEntry[] { return [...this.cards().values()].filter(card => card.pokemonId === pokemonId && this.entryQuantity(card) > 0); }
+  entryQuantity(card: CardCollectionEntry): number { return card.variants?.length ? card.variants.reduce((sum, variant) => sum + Math.max(0, variant.quantity), 0) : Math.max(0, card.quantity); }
 
   async toggleOwned(id: number): Promise<void> {
     const current = this.entry(id);
@@ -147,13 +154,42 @@ export class CollectionStore {
     await this.saveSettings({ trainerName: name.trim() || 'Entrenador' });
   }
 
+  async setPreferredCurrency(currency: PriceCurrency): Promise<void> {
+    await this.saveSettings({ preferredCurrency: currency });
+  }
+
   async addCard(pokemonId: number, card: PokemonCard, language = 'Español'): Promise<void> {
     const current = this.cardEntry(card.id);
-    const quantity = (current?.quantity ?? 0) + 1;
-    const languageCounts = { ...(current?.languageCounts ?? {}) };
-    languageCounts[language] = (languageCounts[language] ?? 0) + 1;
-    await this.saveCard(this.toCardEntry(pokemonId, card, quantity, languageCounts));
+    const variants = [...(current?.variants ?? [])];
+    const existing = variants.find(item => item.language === language && item.condition === 'Near Mint' && item.finish === 'Normal' && !item.firstEdition);
+    if (existing) existing.quantity += 1;
+    else variants.push({ id: crypto.randomUUID(), language, quantity: 1, condition: 'Near Mint', finish: 'Normal', firstEdition: false, currency: 'USD' });
+    const quantity = variants.reduce((sum, item) => sum + item.quantity, 0);
+    const languageCounts = this.languageCountsFromVariants(variants);
+    await this.saveCard({ ...this.toCardEntry(pokemonId, card, quantity, languageCounts), ...current, variants, quantity, languageCounts, updatedAt: new Date().toISOString() });
     if (!this.isOwned(pokemonId)) await this.toggleOwned(pokemonId);
+  }
+
+  async saveVariant(card: CardCollectionEntry, variant: CardVariant): Promise<void> {
+    const clean: CardVariant = {
+      ...variant,
+      id: variant.id || crypto.randomUUID(),
+      language: variant.language.trim() || 'Otro',
+      quantity: Math.max(0, Math.floor(Number(variant.quantity) || 0)),
+      purchasePrice: this.optionalNumber(variant.purchasePrice),
+      estimatedPrice: this.optionalNumber(variant.estimatedPrice),
+      grade: this.optionalNumber(variant.grade)
+    };
+    const variants = [...(card.variants ?? [])].filter(item => item.id !== clean.id);
+    if (clean.quantity > 0) variants.push(clean);
+    const quantity = variants.reduce((sum, item) => sum + item.quantity, 0);
+    await this.saveCard({ ...card, variants, quantity, languageCounts: this.languageCountsFromVariants(variants), updatedAt: new Date().toISOString() });
+  }
+
+  async removeVariant(card: CardCollectionEntry, variantId: string): Promise<void> {
+    const variants = (card.variants ?? []).filter(item => item.id !== variantId);
+    const quantity = variants.reduce((sum, item) => sum + item.quantity, 0);
+    await this.saveCard({ ...card, variants, quantity, languageCounts: this.languageCountsFromVariants(variants), updatedAt: new Date().toISOString() });
   }
 
   async updateCard(card: CardCollectionEntry, quantity: number, languageCounts: Record<string, number>): Promise<void> {
@@ -166,7 +202,8 @@ export class CollectionStore {
         ])
         .filter((entry): entry is [string, number] => entry[1] > 0)
     );
-    await this.saveCard({ ...card, quantity: cleanQuantity, languageCounts: cleanLanguages, updatedAt: new Date().toISOString() });
+    const variants = card.variants?.length ? card.variants : Object.entries(cleanLanguages).map(([language, count]) => ({ id: crypto.randomUUID(), language, quantity: count, condition: 'Near Mint' as const, finish: 'Normal' as const, firstEdition: false, currency: 'USD' as const }));
+    await this.saveCard({ ...card, quantity: cleanQuantity, languageCounts: cleanLanguages, variants, updatedAt: new Date().toISOString() });
   }
 
   async removeCard(cardId: string): Promise<void> {
@@ -189,11 +226,11 @@ export class CollectionStore {
 
   exportJson(): void {
     const payload: ImportExportPayload = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       exportedAt: new Date().toISOString(),
       entries: [...this.entries().values()],
       cards: [...this.cards().values()],
-      settings: { id: 'profile', trainerName: this.trainerName(), totalTcgCards: this.totalTcgCards(), updatedAt: new Date().toISOString() }
+      settings: { id: 'profile', trainerName: this.trainerName(), totalTcgCards: this.totalTcgCards(), preferredCurrency: this.preferredCurrency(), updatedAt: new Date().toISOString() }
     };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob); const link = document.createElement('a');
@@ -202,12 +239,15 @@ export class CollectionStore {
 
   async importJson(file: File): Promise<void> {
     const parsed = JSON.parse(await file.text()) as Partial<ImportExportPayload> & { schemaVersion: number };
-    if (![1, 2].includes(parsed.schemaVersion) || !Array.isArray(parsed.entries)) throw new Error('Archivo incompatible');
+    if (![1, 2, 3].includes(parsed.schemaVersion) || !Array.isArray(parsed.entries)) throw new Error('Archivo incompatible');
     const cleanedEntries = parsed.entries.filter(entry => Number.isInteger(entry.pokemonId)).map(entry => ({
       pokemonId: entry.pokemonId, owned: Boolean(entry.owned), favorite: Boolean(entry.favorite),
       obtainedAt: entry.obtainedAt, updatedAt: new Date().toISOString()
     }));
-    const cleanedCards = (parsed.cards ?? []).filter(card => typeof card.cardId === 'string').map(card => ({ ...card, quantity: Math.max(0, Number(card.quantity) || 0), languageCounts: card.languageCounts ?? {}, updatedAt: new Date().toISOString() }));
+    const cleanedCards = (parsed.cards ?? []).filter(card => typeof card.cardId === 'string').map(card => {
+      const variants = card.variants ?? Object.entries(card.languageCounts ?? {}).map(([language, count]) => ({ id: crypto.randomUUID(), language, quantity: Math.max(0, Number(count) || 0), condition: 'Near Mint' as const, finish: 'Normal' as const, firstEdition: false, currency: 'USD' as const }));
+      return { ...card, variants, quantity: variants.reduce((sum, item) => sum + item.quantity, 0), languageCounts: this.languageCountsFromVariants(variants), updatedAt: new Date().toISOString() };
+    });
     await db.transaction('rw', db.collection, db.cards, db.settings, async () => {
       await db.collection.bulkPut(cleanedEntries);
       if (cleanedCards.length) await db.cards.bulkPut(cleanedCards);
@@ -218,6 +258,7 @@ export class CollectionStore {
     this.cards.set(new Map(cards.map(card => [card.cardId, card])));
     this.trainerName.set(settings?.trainerName?.trim() || 'Entrenador');
     this.totalTcgCards.set(settings?.totalTcgCards ?? this.totalTcgCards());
+    this.preferredCurrency.set(settings?.preferredCurrency ?? this.preferredCurrency());
     this.checkAchievements();
   }
 
@@ -241,15 +282,28 @@ export class CollectionStore {
 
   private async saveSettings(values: Partial<UserSettings>): Promise<void> {
     const current = await db.settings.get('profile');
-    const next: UserSettings = { id: 'profile', trainerName: this.trainerName(), totalTcgCards: this.totalTcgCards(), ...current, ...values, updatedAt: new Date().toISOString() };
+    const next: UserSettings = { id: 'profile', trainerName: this.trainerName(), totalTcgCards: this.totalTcgCards(), preferredCurrency: this.preferredCurrency(), ...current, ...values, updatedAt: new Date().toISOString() };
     await db.settings.put(next);
     this.trainerName.set(next.trainerName?.trim() || 'Entrenador');
     this.totalTcgCards.set(next.totalTcgCards ?? 0);
+    this.preferredCurrency.set(next.preferredCurrency ?? 'USD');
   }
 
   private toCardEntry(pokemonId: number, card: PokemonCard, quantity: number, languageCounts: Record<string, number>): CardCollectionEntry {
     return { cardId: card.id, pokemonId, cardName: card.name, setName: card.setName, number: card.number, rarity: card.rarity,
-      imageSmall: card.imageSmall, imageLarge: card.imageLarge, marketPriceUsd: card.marketPriceUsd, quantity, languageCounts, updatedAt: new Date().toISOString() };
+      imageSmall: card.imageSmall, imageLarge: card.imageLarge, marketPriceUsd: card.marketPriceUsd, marketPriceEur: card.marketPriceEur, quantity, languageCounts, variants: [], updatedAt: new Date().toISOString() };
+  }
+
+  private languageCountsFromVariants(variants: CardVariant[]): Record<string, number> {
+    const result: Record<string, number> = {};
+    for (const variant of variants) result[variant.language] = (result[variant.language] ?? 0) + Math.max(0, variant.quantity);
+    return result;
+  }
+
+  private optionalNumber(value: number | undefined): number | undefined {
+    if (value === undefined || value === null || value === ('' as unknown as number)) return undefined;
+    const number = Number(value);
+    return Number.isFinite(number) && number >= 0 ? number : undefined;
   }
 
   private checkAchievements(): void {

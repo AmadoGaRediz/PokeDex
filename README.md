@@ -1,81 +1,43 @@
-# PokéCardDex
+# PokéCardDex v3
 
-PWA Angular para coleccionistas de Pokémon TCG. La meta principal es completar la Pokédex con al menos una carta de cada Pokémon, y la meta secundaria es registrar cartas específicas, duplicados, idiomas y valor estimado.
+PWA Angular 22 para completar una Pokédex mediante cartas Pokémon TCG y administrar una colección física local.
 
-## Funciones principales
+## Novedades de la tercera actualización
 
-- Pokédex offline-first con PokéAPI e IndexedDB.
-- Estado obtenido/faltante por Pokémon.
-- Favoritos, filtros por tipo, generación, obtenidos, faltantes y favoritos.
-- Vista de detalle con cartas de Pokémon TCG API.
-- Registro de cartas específicas: cantidad total, idioma y cantidad por idioma.
-- Apartado **Mis cartas** para ver toda la colección TCG registrada.
-- Contadores separados: Pokémon obtenidos, cartas distintas y copias totales.
-- Valor estimado en USD usando precios disponibles de Pokémon TCG API.
-- Más de 25 logros tipo medalla.
-- Perfil con nombre del entrenador para notificaciones de logros.
-- Exportación e importación JSON incluyendo cartas, idiomas, favoritos y configuración.
-- Modo claro/oscuro, diseño responsive móvil tipo Pokédex y PWA instalable.
+- Estado persistente del Dex: búsqueda, filtros, orden y posición de desplazamiento sobreviven al detalle, al botón Atrás y a recargas de sesión.
+- Filtros sincronizados en query parameters.
+- Navegación móvil tipo Cupertino con tab bar, safe areas de iPhone, bottom sheets y controles táctiles.
+- Diseño visual de Pokédex renovado.
+- Gestión de variantes por carta: idioma, cantidad, condición, acabado, primera edición, graduación, precio pagado, valor estimado, moneda, fecha, ubicación y notas.
+- Contadores separados de Pokémon, cartas únicas y copias totales.
+- Valor estimado y costo registrado (los precios externos son referencias y pueden variar por idioma/condición).
+- Más de 25 medallas y notificaciones personalizadas con el nombre del entrenador.
+- Migración IndexedDB v3 que conserva los datos de versiones anteriores.
+- Respaldo JSON schema v3 compatible con respaldos v1/v2.
+- Aviso de nueva versión PWA con actualización controlada.
 
 ## Requisitos
 
-Angular 22 requiere una versión compatible de Node.js:
+- Node.js 22.22.3, 24.15.0 o 26+
+- npm 10.9+
 
-```bash
-node -v
-```
-
-Usa Node `22.22.3` o superior compatible, por ejemplo `22.22.3`.
-
-## Desarrollo local
+## Desarrollo
 
 ```bash
 npm install
 npm start
 ```
 
-Abre `http://localhost:4200`.
-
-## Build de producción
+## Producción
 
 ```bash
 npm run build
 ```
 
-La salida queda en:
+Directorio para Render Static Site:
 
 ```text
 dist/pokecarddex/browser
 ```
 
-## Render Static Site
-
-Build Command:
-
-```bash
-npm ci && npm run build
-```
-
-Publish Directory:
-
-```text
-dist/pokecarddex/browser
-```
-
-Environment variable recomendada:
-
-```text
-NODE_VERSION=22.22.3
-```
-
-Rewrite para Angular Router:
-
-```text
-Source: /*
-Destination: /index.html
-Action: Rewrite
-```
-
-## Datos locales
-
-El progreso vive en IndexedDB del navegador. Un redeploy normal no borra los datos si se conserva el mismo dominio y no se elimina la base `pokecarddex`. Para respaldo usa **Configuración > Exportar progreso**.
+En Render agrega una regla Rewrite de `/*` a `/index.html`.

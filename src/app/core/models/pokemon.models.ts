@@ -26,6 +26,28 @@ export interface PokemonCard {
   imageSmall: string;
   imageLarge: string;
   marketPriceUsd?: number;
+  marketPriceEur?: number;
+}
+
+export type CardCondition = 'Mint' | 'Near Mint' | 'Excellent' | 'Good' | 'Played' | 'Poor';
+export type CardFinish = 'Normal' | 'Holo' | 'Reverse Holo';
+export type PriceCurrency = 'USD' | 'EUR' | 'MXN';
+
+export interface CardVariant {
+  id: string;
+  language: string;
+  quantity: number;
+  condition: CardCondition;
+  finish: CardFinish;
+  firstEdition: boolean;
+  gradedBy?: 'PSA' | 'CGC' | 'BGS' | '';
+  grade?: number;
+  purchasePrice?: number;
+  estimatedPrice?: number;
+  currency: PriceCurrency;
+  acquiredAt?: string;
+  location?: string;
+  notes?: string;
 }
 
 export interface CardCollectionEntry {
@@ -38,8 +60,10 @@ export interface CardCollectionEntry {
   imageSmall: string;
   imageLarge: string;
   marketPriceUsd?: number;
+  marketPriceEur?: number;
   quantity: number;
   languageCounts: Record<string, number>;
+  variants?: CardVariant[];
   updatedAt: string;
 }
 
@@ -47,11 +71,12 @@ export interface UserSettings {
   id: 'profile';
   trainerName: string;
   totalTcgCards?: number;
+  preferredCurrency?: PriceCurrency;
   updatedAt: string;
 }
 
 export interface ImportExportPayload {
-  schemaVersion: 2;
+  schemaVersion: 3;
   exportedAt: string;
   entries: CollectionEntry[];
   cards: CardCollectionEntry[];
